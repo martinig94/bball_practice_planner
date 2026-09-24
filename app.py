@@ -12,10 +12,14 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from planner import AGE_LEVELS, FOCUS_LABELS, SKILL_LEVELS, generate_practice, load_drills, plan_to_markdown
+from planner import (AGE_LEVELS, FOCUS_LABELS, SKILL_LEVELS, Drill, generate_practice, load_drills,
+                     next_drill_id, plan_to_markdown, save_drills)
+from planner.generator import CATEGORIES, FOCUS_TAGS, GAME_FORMATS, INTENSITIES, SPACES, SUPERVISION
+from planner.log import LogEntry, drill_stats, load_log, log_plan, rating_weights, recent_drill_ids, save_log
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data" / "drills.csv"
+LOG = ROOT / "data" / "practice_log.csv"
 
 st.set_page_config(page_title="Practice Planner", page_icon="🏀", layout="wide")
 
@@ -27,6 +31,9 @@ def drills_cached(mtime: float):
 
 
 drills = drills_cached(DATA.stat().st_mtime)
+drill_by_id = {d.id: d for d in drills}
+log_entries = load_log(LOG)
+stats = drill_stats(log_entries)
 
 if "seed" not in st.session_state:
     st.session_state.seed = random.randint(1, 999_999)
@@ -73,24 +80,38 @@ with st.sidebar:
     if st.button("🔀 Reshuffle drills", use_container_width=True):
         st.session_state.seed = random.randint(1, 999_999)
 
+    st.header("Memory")
+    avoid_n = st.number_input("Avoid drills used in the last … practices", min_value=0, max_value=10, value=2, step=1,
+                              help="Uses the practice log. 0 = no restriction.")
+    use_ratings = st.checkbox("Prefer well-rated drills", value=True,
+                              help="Drills you rated high are picked more often, low less often; 0 stars = never again.")
     st.caption("Every plan opens with 5–15 min of physical preparation (warm-up + coordination) "
                "and closes with a small-sided game in the format that suits the age group.")
 
 # ---------------------------------------------------------------------------- tabs
 
-tab_plan, tab_library, tab_about = st.tabs(["Plan a practice", "Drill library", "About"])
+tab_plan, tab_log, tab_library, tab_edit, tab_about = st.tabs(
+    ["Plan a practice", "Practice log", "Drill library", "Edit drills", "About"])
 
 with tab_plan:
+    weights, banned = rating_weights(log_entries) if use_ratings else ({}, set())
+    exclude = recent_drill_ids(log_entries, int(avoid_n)) | banned
     plan = generate_practice(
         drills, n_players=int(n_players), ages=ages, duration=int(duration),
         levels=levels, focus=focus, seed=st.session_state.seed, baskets=baskets,
         sideline_strip=sideline_strip, coaches=int(coaches), include_athletic=include_athletic,
+        exclude_ids=exclude, weights=weights,
     )
     present = {k: v for k, v in plan.levels.items() if v > 0}
     show_easier = plan.level_plan.mode == "split" or "beginner" in present
     show_harder = (plan.level_plan.mode == "split" or "advanced" in present) and not plan.level_cap_note
 
-    head, dl = st.columns([4, 1])
+    head, save, dl = st.columns([3, 1, 1])
+    if save.button("💾 Save to practice log", use_container_width=True,
+                   help="Records every drill of this plan with today's date so you can rate it afterwards."):
+        pid = log_plan(plan, LOG)
+        st.toast(f"Saved as practice {pid}. Rate it in the Practice log tab.", icon="💾")
+        st.rerun()
     head.markdown(
         f"## {plan.duration}-minute practice &nbsp; "
         f"<span style='font-size:0.6em;color:gray'>{plan.n_players} players · {' · '.join(plan.ages)} · "
@@ -152,8 +173,55 @@ with tab_plan:
                     st.markdown(f":green[**Easier**] {d.easier}")
                 if show_harder:
                     st.markdown(f":red[**Harder**] {d.harder}")
-                st.caption(f"Source: {d.source}")
+                for v in d.variants:
+                    st.markdown(f":gray[**Variant**] {v}")
+                s_ = stats.get(d.id)
+                hist = (f" · used {s_.uses}× (last {s_.last_used})" + (f" · ★ {s_.avg_rating:.1f}" if s_.avg_rating is not None else "")) if s_ else ""
+                st.caption(f"Source: {d.source}{hist}")
         t += b.minutes
+
+with tab_log:
+    if not log_entries:
+        st.info("No practice saved yet. Build a plan and press **Save to practice log**; then come back here to rate each drill from 0 to 5 stars.", icon="📓")
+    else:
+        st.caption("Rate each drill 0–5 (0 = never again, 3 = fine, 5 = great) and add notes. Ratings feed the planner: "
+                   "well-rated drills come up more often, 0-star drills are excluded, and recently used drills are avoided.")
+        practices = sorted({e.practice_id for e in log_entries}, reverse=True)
+        chosen = st.selectbox("Practice", practices, format_func=lambda p: f"{p}  ·  {next(e.ages for e in log_entries if e.practice_id == p)} · {next(e.n_players for e in log_entries if e.practice_id == p)} players")
+        rows_ = [e for e in log_entries if e.practice_id == chosen]
+        table = pd.DataFrame([{"drill_id": e.drill_id, "drill": e.drill_name, "block": e.block, "min": e.minutes,
+                               "rating": e.rating, "notes": e.notes} for e in rows_])
+        edited = st.data_editor(
+            table, hide_index=True, use_container_width=True, key=f"editor_{chosen}",
+            column_config={
+                "drill_id": st.column_config.TextColumn(disabled=True),
+                "drill": st.column_config.TextColumn(disabled=True),
+                "block": st.column_config.TextColumn(disabled=True),
+                "min": st.column_config.NumberColumn(disabled=True),
+                "rating": st.column_config.NumberColumn("rating (0–5)", min_value=0, max_value=5, step=1, format="%d ★"),
+                "notes": st.column_config.TextColumn("notes", width="large"),
+            },
+        )
+        c1, c2 = st.columns([1, 1])
+        if c1.button("💾 Save ratings", use_container_width=True):
+            for e, (_, r) in zip(rows_, edited.iterrows()):
+                e.rating = None if pd.isna(r["rating"]) else int(r["rating"])
+                e.notes = "" if pd.isna(r["notes"]) else str(r["notes"])
+            save_log(log_entries, LOG)
+            st.toast("Ratings saved.", icon="⭐")
+            st.rerun()
+        if c2.button("🗑️ Delete this practice from the log", use_container_width=True):
+            save_log([e for e in log_entries if e.practice_id != chosen], LOG)
+            st.rerun()
+
+        st.markdown("#### Drill history")
+        hist_rows = []
+        for did, s_ in sorted(stats.items(), key=lambda kv: (-kv[1].uses, kv[0])):
+            d = drill_by_id.get(did)
+            hist_rows.append({"id": did, "drill": d.name if d else "(deleted)", "uses": s_.uses, "last used": s_.last_used,
+                              "avg ★": None if s_.avg_rating is None else round(s_.avg_rating, 1),
+                              "ratings": len(s_.ratings)})
+        st.dataframe(pd.DataFrame(hist_rows), hide_index=True, use_container_width=True, height=300)
 
 with tab_library:
     st.caption(f"{len(drills)} drills. Filter below, then pick a drill to see the full description. "
@@ -178,6 +246,8 @@ with tab_library:
         "players": f"{d.min_players}–{d.max_players}", "space": d.space.replace("_", " "),
         "basket": "yes" if d.needs_basket else "", "sideline": "yes" if d.sideline_ok else "",
         "supervision": d.supervision, "source": d.source.split(" (")[0].split(" —")[0],
+        "uses": stats[d.id].uses if d.id in stats else 0,
+        "avg ★": (round(stats[d.id].avg_rating, 1) if d.id in stats and stats[d.id].avg_rating is not None else None),
         "min": d.duration_min, "intensity": d.intensity, "equipment": d.equipment,
     } for d in view])
     st.dataframe(table, hide_index=True, use_container_width=True, height=420)
@@ -189,7 +259,81 @@ with tab_library:
         st.markdown(f"**Coaching points:** {pick.coaching_points}")
         st.markdown(f":green[**Easier**] {pick.easier}")
         st.markdown(f":red[**Harder**] {pick.harder}")
+        for v in pick.variants:
+            st.markdown(f":gray[**Variant**] {v}")
         st.caption(f"Source: {pick.source}")
+
+with tab_edit:
+    st.caption("Add a drill, modify one, or add variants. Changes are written to `data/drills.csv` and the "
+               "planner reloads them immediately. Commit the file to keep them in git.")
+    mode = st.radio("What do you want to do?", ("Edit an existing drill", "Add a new drill"), horizontal=True)
+    base: Drill | None = None
+    if mode == "Edit an existing drill":
+        base = st.selectbox("Drill", drills, format_func=lambda d: f"{d.id} — {d.name}", key="edit_pick")
+    new_cat = st.selectbox("Category", CATEGORIES, index=CATEGORIES.index(base.category) if base else 2,
+                           help="Decides which block the drill can fill; also sets the id prefix for a new drill.")
+    with st.form("drill_form", clear_on_submit=False):
+        c1, c2 = st.columns([1, 3])
+        drill_id = c1.text_input("Id", value=base.id if base else next_drill_id(drills, new_cat), disabled=base is not None)
+        name = c2.text_input("Name", value=base.name if base else "")
+        c1, c2, c3 = st.columns(3)
+        focus_sel = c1.multiselect("Focus tags", FOCUS_TAGS, default=sorted(base.focus) if base else [new_cat] if new_cat in FOCUS_TAGS else [])
+        ages_sel = c2.multiselect("Ages", AGE_LEVELS, default=[a for a in AGE_LEVELS if base and a in base.ages] or (list(AGE_LEVELS) if not base else []))
+        levels_sel = c3.multiselect("Levels", SKILL_LEVELS, default=[l for l in SKILL_LEVELS if base and l in base.levels] or (list(SKILL_LEVELS) if not base else []))
+        c1, c2, c3, c4 = st.columns(4)
+        min_p = c1.number_input("Min players", 1, 30, base.min_players if base else 4)
+        max_p = c2.number_input("Max players per group", 1, 30, base.max_players if base else 16)
+        dur = c3.number_input("Typical minutes", 2, 30, base.duration_min if base else 8)
+        intensity = c4.selectbox("Intensity", INTENSITIES, index=INTENSITIES.index(base.intensity) if base else 1)
+        c1, c2, c3, c4 = st.columns(4)
+        needs_basket = c1.checkbox("Needs a basket", value=base.needs_basket if base else True)
+        space = c2.selectbox("Space", SPACES, index=SPACES.index(base.space) if base else 1)
+        sideline_ok = c3.checkbox("Fits the sideline strip", value=base.sideline_ok if base else False)
+        supervision = c4.selectbox("Supervision", SUPERVISION, index=SUPERVISION.index(base.supervision) if base else 1)
+        game_format = st.multiselect("Scrimmage format (only for games that end a practice)", GAME_FORMATS,
+                                     default=sorted(base.game_format) if base else [])
+        equipment = st.text_input("Equipment", value=base.equipment if base else "balls")
+        description = st.text_area("Description — how to run it", value=base.description if base else "", height=110)
+        coaching_points = st.text_area("Coaching points", value=base.coaching_points if base else "", height=70)
+        c1, c2 = st.columns(2)
+        easier = c1.text_area("Easier (beginners)", value=base.easier if base else "", height=70)
+        harder = c2.text_area("Harder (advanced)", value=base.harder if base else "", height=70)
+        variants = st.text_area("Variants — one per line", value="\n".join(base.variants) if base else "", height=90,
+                                help="Any further variations, constraints or progressions. Shown on the card and in the export.")
+        source = st.text_input("Source", value=base.source if base else "original (written for this project)")
+        submitted = st.form_submit_button("💾 Save drill", use_container_width=True)
+    if submitted:
+        problems = []
+        if not name.strip(): problems.append("name is required")
+        if not description.strip(): problems.append("description is required")
+        if not ages_sel: problems.append("pick at least one age")
+        if not levels_sel: problems.append("pick at least one level")
+        if min_p > max_p: problems.append("min players must be ≤ max players")
+        if base is None and drill_id in drill_by_id: problems.append(f"id {drill_id} already exists")
+        if problems:
+            st.error("; ".join(problems))
+        else:
+            new_drill = Drill(
+                id=drill_id.strip(), name=name.strip(), category=new_cat, focus=frozenset(focus_sel) | {new_cat} if new_cat in FOCUS_TAGS else frozenset(focus_sel),
+                ages=frozenset(ages_sel), levels=frozenset(levels_sel), min_players=int(min_p), max_players=int(max_p),
+                duration_min=int(dur), intensity=intensity, equipment=equipment.strip(), description=description.strip(),
+                coaching_points=coaching_points.strip(), easier=easier.strip(), harder=harder.strip(),
+                needs_basket=needs_basket, space=space, sideline_ok=sideline_ok, supervision=supervision,
+                game_format=frozenset(game_format), source=source.strip() or "original",
+                variants=tuple(v.strip() for v in variants.splitlines() if v.strip()),
+            )
+            updated = [new_drill if d.id == new_drill.id else d for d in drills]
+            if base is None:
+                updated.append(new_drill)
+            save_drills(updated, DATA)
+            st.toast(f"Saved {new_drill.id} — {new_drill.name}.", icon="✅")
+            st.rerun()
+    if base is not None:
+        with st.expander("Delete this drill"):
+            st.warning("Deleting removes the drill from the database; log entries keep its id.", icon="⚠️")
+            if st.button(f"🗑️ Delete {base.id}", type="primary"):
+                save_drills([d for d in drills if d.id != base.id], DATA)
+                st.rerun()
 
 with tab_about:
     st.markdown(

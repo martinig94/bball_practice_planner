@@ -8,7 +8,9 @@ from .generator import (
     Plan,
     generate_practice,
     load_drills,
+    next_drill_id,
     plan_to_markdown,
+    save_drills,
 )
 
 __all__ = [
@@ -19,5 +21,7 @@ __all__ = [
     "Plan",
     "generate_practice",
     "load_drills",
+    "next_drill_id",
     "plan_to_markdown",
+    "save_drills",
 ]

@@ -132,12 +132,40 @@ One row per drill; list fields are `;`-separated. Offense has its own category w
 | `supervision` | `low`, `medium`, `high` — how much coaching the drill needs to run properly |
 | `game_format` | For scrimmage-type games: `2v2;3v3`, `4v4`, `5v5`… — used to pick the closing scrimmage by age |
 | `source` | Where the drill comes from: `original (written for this project)`, optionally followed by "see also …" when a public source describes the same drill, or the site it was adapted from |
+| `variants` | Extra variations, separated by ` \| ` (the app edits these one per line) |
 
 ### Adding your own drills
 
 Append a row to `data/drills.csv` with a new unique `id` and keep the tag vocabulary
 above; the app reloads the file automatically. Run `pytest` to make sure the file
 still parses and every combination of inputs still produces a full practice.
+
+## Practice log and ratings
+
+**Save to practice log** on the plan tab records every drill of the plan (sideline drills
+included) in `data/practice_log.csv` with today's date. In the **Practice log** tab you rate
+each drill from 0 to 5 stars and add notes:
+
+| Stars | Effect on future plans |
+|---|---|
+| blank | none (not rated yet) |
+| 0 | never proposed again |
+| 1–2 | picked less often |
+| 3 | neutral |
+| 4–5 | picked more often (5 stars ≈ 1.7× the chance of a neutral drill) |
+
+The sidebar's **Memory** section also lets you avoid drills used in the last *N* practices
+(default 2) and switch the rating preference off. Each plan card shows how often a drill
+has been used, when, and its average rating; the drill history table lists everything.
+The log is a plain CSV committed with the repo, so it follows you across machines with `git`.
+
+## Editing drills in the app
+
+The **Edit drills** tab adds a new drill (id assigned automatically from the category),
+modifies an existing one, or deletes it. Besides the *Easier* / *Harder* variations each drill
+can carry any number of free-text **variants** (one per line), shown on the plan card and in
+the export. Changes are written straight to `data/drills.csv`; run `pytest` and commit to keep
+them.
 
 ## Using the planner from Python
 
@@ -155,9 +183,12 @@ print(plan_to_markdown(plan))
 
 ```
 app.py                   Streamlit UI
-planner/generator.py     Pure planning logic — filtering, time budget, export
+planner/generator.py     Pure planning logic — filtering, time budget, export, save_drills
+planner/log.py           Practice log: save plans, ratings, stats, weights for the planner
+data/practice_log.csv    Your practices and ratings (created on first save)
 data/drills.csv          Drill database
 tests/test_generator.py  pytest suite: database checks + 1,080 input combinations (rosters to 25, 2–4 baskets, court set-ups)
+tests/test_log.py        Practice log, ratings, exclusions and editor round trip
 requirements.txt
 ```
 

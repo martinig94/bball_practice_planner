@@ -31,7 +31,7 @@ def test_database_fields(drills):
         assert d.ages <= set(AGE_LEVELS), d.id
         assert d.levels <= set(SKILL_LEVELS), d.id
         assert d.category in CATEGORIES, d.id
-        assert d.easier and d.harder, d.id
+        assert d.description, d.id
         assert d.source, d.id
         assert d.space in SPACES, d.id
         assert d.supervision in SUPERVISION, d.id

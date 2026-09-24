@@ -36,7 +36,11 @@ REQUIRED_COLUMNS = (
     "id", "name", "category", "focus", "ages", "levels", "min_players", "max_players",
     "duration_min", "intensity", "equipment", "description", "coaching_points", "easier", "harder",
 )
-OPTIONAL_COLUMNS = ("needs_basket", "space", "sideline_ok", "supervision", "game_format", "source")  # have defaults when absent
+OPTIONAL_COLUMNS = ("needs_basket", "space", "sideline_ok", "supervision", "game_format", "source", "variants")  # have defaults when absent
+ALL_COLUMNS = REQUIRED_COLUMNS + OPTIONAL_COLUMNS
+FOCUS_TAGS = ("physical", "coordination", "ballhandling", "passing_shooting", "offense", "defense", "team_concepts", "game")
+INTENSITIES = ("low", "medium", "high")
+GAME_FORMATS = ("2v2", "3v3", "4v4", "5v5")
 SPACES = ("full_court", "half_court", "small_area")
 SUPERVISION = ("low", "medium", "high")
 TARGET_PER_BASKET = 8  # above this many players per hoop, waiting starts to hurt
@@ -68,6 +72,7 @@ class Drill:
     supervision: str = "medium"  # low | medium | high — how much coaching it needs to run
     game_format: frozenset[str] = frozenset()  # e.g. {"3v3", "4v4"} for scrimmage-type games
     source: str = "original"  # where the drill comes from (attribution shown in the UI/export)
+    variants: tuple[str, ...] = ()  # extra variations beyond easier/harder, free text
 
     def max_groups(self, baskets: int, max_stations: int = 4) -> int:
         """How many parallel groups this drill can run on one court.
@@ -127,7 +132,25 @@ class Drill:
             supervision=(row.get("supervision") or "medium").strip().lower(),
             game_format=split(row.get("game_format") or ""),
             source=(row.get("source") or "original").strip(),
+            variants=tuple(v.strip() for v in (row.get("variants") or "").split(" | ") if v.strip()),
         )
+
+    def to_row(self) -> dict[str, str]:
+        """Inverse of from_row: the CSV representation of this drill."""
+        order = lambda vals, ref: ";".join(v for v in ref if v in vals) or ";".join(sorted(vals))  # noqa: E731
+        return {
+            "id": self.id, "name": self.name, "category": self.category,
+            "focus": order(self.focus, FOCUS_TAGS), "ages": order(self.ages, AGE_LEVELS),
+            "levels": order(self.levels, SKILL_LEVELS),
+            "min_players": str(self.min_players), "max_players": str(self.max_players),
+            "duration_min": str(self.duration_min), "intensity": self.intensity, "equipment": self.equipment,
+            "description": self.description, "coaching_points": self.coaching_points,
+            "easier": self.easier, "harder": self.harder,
+            "needs_basket": "yes" if self.needs_basket else "no", "space": self.space,
+            "sideline_ok": "yes" if self.sideline_ok else "no", "supervision": self.supervision,
+            "game_format": ";".join(sorted(self.game_format)), "source": self.source,
+            "variants": " | ".join(self.variants),
+        }
 
 
 @dataclass
@@ -243,6 +266,27 @@ def load_drills(path: str | Path = "data/drills.csv") -> list[Drill]:
     return drills
 
 
+def save_drills(drills: Sequence[Drill], path: str | Path = "data/drills.csv") -> None:
+    """Write the whole database back to CSV (used by the in-app editor)."""
+    ids = [d.id for d in drills]
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    if dupes:
+        raise ValueError(f"duplicated ids: {', '.join(dupes)}")
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=ALL_COLUMNS)
+        w.writeheader()
+        for d in drills:
+            w.writerow(d.to_row())
+
+
+def next_drill_id(drills: Sequence[Drill], category: str) -> str:
+    """Next free id for a category, following the WU/CO/BH/PS/OF/DF/TC/GM/CD convention."""
+    prefix = {"warmup": "WU", "coordination": "CO", "ballhandling": "BH", "passing_shooting": "PS",
+              "offense": "OF", "defense": "DF", "team_concepts": "TC", "game": "GM", "cooldown": "CD"}[category]
+    nums = [int(d.id[len(prefix):]) for d in drills if d.id.startswith(prefix) and d.id[len(prefix):].isdigit()]
+    return f"{prefix}{(max(nums) + 1) if nums else 1:02d}"
+
+
 # ------------------------------------------------------------------------ helpers
 
 
@@ -314,7 +358,8 @@ def age_specificity(d: Drill) -> float:
 
 def pick_block(pool: Sequence[Drill], minutes: int, used: set[str], rng: random.Random,
                max_drills: int = 3, min_drill: int = 4, n_players: int = 0,
-               baskets: int = 2, max_groups: int = 4, ages: Sequence[str] = ()) -> list[PlannedDrill]:
+               baskets: int = 2, max_groups: int = 4, ages: Sequence[str] = (),
+               weights: dict[str, float] | None = None) -> list[PlannedDrill]:
     """Draw drills from `pool` until `minutes` are covered, then rescale to fit exactly.
 
     Drills that keep the whole roster in one group are preferred over ones that
@@ -324,8 +369,11 @@ def pick_block(pool: Sequence[Drill], minutes: int, used: set[str], rng: random.
     if not candidates or minutes <= 0:
         return []
     # Efraimidis-Spirakis weighted sampling without replacement
-    # weight = age specificity / groups needed  ->  key = u ** (1 / weight)
-    candidates.sort(key=lambda d: rng.random() ** (d.groups_for(n_players) / age_specificity(d)), reverse=True)
+    # weight = age specificity * rating weight / groups needed  ->  key = u ** (1 / weight)
+    weights = weights or {}
+    candidates.sort(
+        key=lambda d: rng.random() ** (d.groups_for(n_players) / (age_specificity(d) * weights.get(d.id, 1.0))),
+        reverse=True)
     chosen: list[Drill] = []
     total = 0
     for d in candidates:
@@ -389,6 +437,8 @@ def generate_practice(
     sideline_strip: bool = True,
     coaches: int = 1,
     include_athletic: bool = True,
+    exclude_ids: Iterable[str] = (),
+    weights: dict[str, float] | None = None,
 ) -> Plan:
     """Build a practice plan.
 
@@ -397,7 +447,9 @@ def generate_practice(
     that need no basket. sideline_strip: a narrow strip along the long side of
     the court is free, so crowded basket drills can be run as split-and-swap
     blocks with half the team doing a self-managed drill there. coaches: with a
-    single coach the sideline drill must need low supervision.
+    single coach the sideline drill must need low supervision. exclude_ids: drills to
+    leave out (recently used, or rated 0 stars). weights: per-drill sampling multipliers
+    from ratings (1.0 = neutral).
     """
     rng = random.Random(seed)
     plan_warnings_extra: list[str] = []
@@ -420,7 +472,10 @@ def generate_practice(
                           "drill (the 'Harder' variation is written for U11+ and is hidden).")
 
     budget = time_budget(duration, ages, include_athletic)
-    pool = Pool(drills, ages, levels_present, n_players, baskets, max_groups)
+    exclude = set(exclude_ids)
+    pool = Pool([d for d in drills if d.id not in exclude], ages, levels_present, n_players, baskets, max_groups)
+    if not pool.loose:  # everything excluded (tiny database or huge exclusion) — fall back to all drills
+        pool = Pool(drills, ages, levels_present, n_players, baskets, max_groups)
     used: set[str] = set()
     blocks: list[Block] = []
 
@@ -459,12 +514,12 @@ def generate_practice(
             used.add(side.id)
 
     # 1. Physical preparation: one warm-up drill + coordination / athletic work.
-    warm = pick_block(pool.select(lambda d: d.category == "warmup"), min(6, budget["prep"] - 4), used, rng, max_drills=1, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
+    warm = pick_block(pool.select(lambda d: d.category == "warmup"), min(6, budget["prep"] - 4), used, rng, max_drills=1, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages, weights=weights)
     used.update(pd.drill.id for pd in warm)
     coord_pool = pool.select(lambda d: d.category == "coordination" and d.intensity != "high", used)
     if len(coord_pool) < 2:
         coord_pool = pool.select(lambda d: d.category == "coordination", used)
-    coord = pick_block(coord_pool, budget["prep"] - sum(pd.minutes for pd in warm), used, rng, max_drills=2, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
+    coord = pick_block(coord_pool, budget["prep"] - sum(pd.minutes for pd in warm), used, rng, max_drills=2, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages, weights=weights)
     prep = warm + coord
     for pd, m in zip(prep, scale_minutes([pd.drill.duration_min for pd in prep], budget["prep"])):
         pd.minutes = m
@@ -475,7 +530,7 @@ def generate_practice(
     # 2. Athletic development (optional), right after the warm-up while legs are fresh.
     if budget["athletic"] > 0:
         ath = pick_block(pool.select(lambda d: d.category == "coordination", used), budget["athletic"], used, rng,
-                         max_drills=2, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
+                         max_drills=2, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages, weights=weights)
         add_block("Athletic development", budget["athletic"], ath,
                   "Speed, jumping and change of direction while the players are warm but not tired.")
 
@@ -485,11 +540,11 @@ def generate_practice(
     for f, minutes in zip(focus, per_focus):
         fpool = pool.select(lambda d: d.category in SKILL_CATEGORIES and f in d.focus, used)
         primary = pool.select(lambda d: d.category == f and f in d.focus, used)
-        chosen = pick_block(primary, minutes, used, rng, max_drills=3, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
+        chosen = pick_block(primary, minutes, used, rng, max_drills=3, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages, weights=weights)
         got = sum(pd.minutes for pd in chosen)
         if got < minutes and len(chosen) < 3:
             extra = pick_block(fpool, minutes - got, used | {pd.drill.id for pd in chosen}, rng,
-                               max_drills=3 - len(chosen), n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
+                               max_drills=3 - len(chosen), n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages, weights=weights)
             chosen += extra
             for pd, m in zip(chosen, scale_minutes([pd.drill.duration_min for pd in chosen], minutes)):
                 pd.minutes = m
@@ -512,12 +567,12 @@ def generate_practice(
             plan_warnings_extra = [f"No {'/'.join(sorted(allowed))} scrimmage fits this roster; using another format."]
     scrim_minutes = game_minutes if game_minutes <= 14 else max(10, round(game_minutes * 0.6))
     scrim = pick_block(scrim_pool, scrim_minutes, used, rng, max_drills=1, n_players=n_players,
-                       baskets=baskets, max_groups=max_groups, ages=ages)
+                       baskets=baskets, max_groups=max_groups, ages=ages, weights=weights)
     rest = game_minutes - sum(pd.minutes for pd in scrim)
     fun_pool = pool.select(lambda d: (d.category == "game" or "game" in d.focus) and not d.game_format, used | {pd.drill.id for pd in scrim})
     themed = [d for d in fun_pool if d.focus & set(focus)]
     fun = pick_block(themed if len(themed) >= 2 else fun_pool, rest, used | {pd.drill.id for pd in scrim}, rng,
-                     max_drills=2 if shortfall else 1, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages) if rest >= 5 else []
+                     max_drills=2 if shortfall else 1, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages, weights=weights) if rest >= 5 else []
     game = fun + scrim  # scrimmage last
     if rest < 5 and scrim:
         scrim[0].minutes = game_minutes
@@ -531,11 +586,11 @@ def generate_practice(
     remaining = duration - budget["cooldown"] - sum(b.minutes for b in blocks)
     if remaining > 0:
         extra = pick_block(pool.select(lambda d: d.category == "coordination", used), remaining, used, rng,
-                           max_drills=2, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
+                           max_drills=2, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages, weights=weights)
         add_block("Extra coordination", remaining, extra)
 
     # 5. Cool-down.
-    cool = pick_block(pool.select(lambda d: d.category == "cooldown", used), budget["cooldown"], used, rng, max_drills=1, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
+    cool = pick_block(pool.select(lambda d: d.category == "cooldown", used), budget["cooldown"], used, rng, max_drills=1, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages, weights=weights)
     add_block("Cool-down & reflection", budget["cooldown"], cool)
 
     plan = Plan(n_players, ages, duration, levels, focus, seed, baskets, sideline_strip, coaches,
@@ -607,6 +662,8 @@ def plan_to_markdown(plan: Plan) -> str:
                 lines.append(f"- Easier (beginners): {d.easier}")
             if show_harder:
                 lines.append(f"- Harder (advanced): {d.harder}")
+            for v in d.variants:
+                lines.append(f"- Variant: {v}")
             lines.append("")
             t += pd.minutes
     for w in plan.warnings:
