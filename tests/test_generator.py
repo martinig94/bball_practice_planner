@@ -1,6 +1,7 @@
 """Run with:  pytest"""
 
 import itertools
+import zlib
 from pathlib import Path
 
 import pytest
@@ -62,7 +63,7 @@ def test_plan_structure(drills, duration, ages, n, focus, court):
     third = n // 3
     levels = {"beginner": third, "intermediate": n - 2 * third, "advanced": third}
     plan = generate_practice(drills, n, ages, duration, levels, focus,
-                             seed=hash((duration, n, tuple(focus), court)) % 10_000,
+                             seed=zlib.crc32(repr((duration, ages, n, focus, court)).encode()) % 10_000,
                              baskets=baskets, coaches=coaches, sideline_strip=strip, include_athletic=athletic)
 
     # block order: prep, [athletic], skills..., game, cool-down
