@@ -135,10 +135,20 @@ with tab_plan:
                 if pd_.setup_note:
                     st.markdown(f":orange[**Organisation**] {pd_.setup_note}")
                 st.write(d.description)
+                st.markdown(f"**Coaching points:** {d.coaching_points}")
+                if pd_.sideline:
+                    sd = pd_.sideline
+                    with st.container(border=True):
+                        st.markdown(f":violet[**Sideline strip — {sd.name}**] &nbsp; "
+                                    f"<span style='color:gray;font-size:0.85em'>{sd.id} · supervision {sd.supervision} · "
+                                    f"equipment: {sd.equipment}</span>", unsafe_allow_html=True)
+                        st.write(sd.description)
+                        st.markdown(f"**Coaching points:** {sd.coaching_points}")
                 if show_easier:
                     st.markdown(f":green[**Easier**] {d.easier}")
                 if show_harder:
                     st.markdown(f":red[**Harder**] {d.harder}")
+                st.caption(f"Source: {d.source}")
         t += b.minutes
 
 with tab_library:
@@ -163,7 +173,7 @@ with tab_library:
         "levels": ", ".join(l for l in SKILL_LEVELS if l in d.levels),
         "players": f"{d.min_players}–{d.max_players}", "space": d.space.replace("_", " "),
         "basket": "yes" if d.needs_basket else "", "sideline": "yes" if d.sideline_ok else "",
-        "supervision": d.supervision,
+        "supervision": d.supervision, "source": d.source.split(" (")[0].split(" —")[0],
         "min": d.duration_min, "intensity": d.intensity, "equipment": d.equipment,
     } for d in view])
     st.dataframe(table, hide_index=True, use_container_width=True, height=420)
@@ -175,6 +185,7 @@ with tab_library:
         st.markdown(f"**Coaching points:** {pick.coaching_points}")
         st.markdown(f":green[**Easier**] {pick.easier}")
         st.markdown(f":red[**Harder**] {pick.harder}")
+        st.caption(f"Source: {pick.source}")
 
 with tab_about:
     st.markdown(

@@ -90,8 +90,11 @@ usable drills — the planner then moves those minutes to the game block and tel
 
 ## The drill database — `data/drills.csv`
 
-155 drills in English, written for this project (no external source). One row per
-drill; list fields are `;`-separated. Offense has its own category with half-court
+177 drills in English. Most were written for this project; others are adapted (in our
+own words, with attribution in the `source` column) from
+[hoopsaddict.com — Basketball Drills for 9-Year-Olds](https://www.hoopsaddict.com/basketball-drills-for-9-year-olds/)
+and [hoopdrills.org](https://hoopdrills.org/drills) (which credits Breakthrough Basketball).
+One row per drill; list fields are `;`-separated. Offense has its own category with half-court
 (motion, drive-and-kick, give-and-go, screens, post entry) and transition (outlet, lanes,
 2v1/3v2 continuous, advantage games, early offense) drills.
 
@@ -115,6 +118,7 @@ drill; list fields are `;`-separated. Offense has its own category with half-cou
 | `sideline_ok` | `yes` / `no` — can run in the narrow strip along the long side of the court |
 | `supervision` | `low`, `medium`, `high` — how much coaching the drill needs to run properly |
 | `game_format` | For scrimmage-type games: `2v2;3v3`, `4v4`, `5v5`… — used to pick the closing scrimmage by age |
+| `source` | Where the drill comes from: `original (written for this project)`, optionally followed by "see also …" when a public source describes the same drill, or the site it was adapted from |
 
 ### Adding your own drills
 

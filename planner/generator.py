@@ -36,7 +36,7 @@ REQUIRED_COLUMNS = (
     "id", "name", "category", "focus", "ages", "levels", "min_players", "max_players",
     "duration_min", "intensity", "equipment", "description", "coaching_points", "easier", "harder",
 )
-OPTIONAL_COLUMNS = ("needs_basket", "space", "sideline_ok", "supervision", "game_format")  # have defaults when absent
+OPTIONAL_COLUMNS = ("needs_basket", "space", "sideline_ok", "supervision", "game_format", "source")  # have defaults when absent
 SPACES = ("full_court", "half_court", "small_area")
 SUPERVISION = ("low", "medium", "high")
 TARGET_PER_BASKET = 8  # above this many players per hoop, waiting starts to hurt
@@ -67,6 +67,7 @@ class Drill:
     sideline_ok: bool = False  # fits the narrow strip along the long side of the court
     supervision: str = "medium"  # low | medium | high — how much coaching it needs to run
     game_format: frozenset[str] = frozenset()  # e.g. {"3v3", "4v4"} for scrimmage-type games
+    source: str = "original"  # where the drill comes from (attribution shown in the UI/export)
 
     def max_groups(self, baskets: int, max_stations: int = 4) -> int:
         """How many parallel groups this drill can run on one court.
@@ -125,6 +126,7 @@ class Drill:
             sideline_ok=(row.get("sideline_ok") or "no").strip().lower() in ("yes", "y", "true", "1"),
             supervision=(row.get("supervision") or "medium").strip().lower(),
             game_format=split(row.get("game_format") or ""),
+            source=(row.get("source") or "original").strip(),
         )
 
 
@@ -558,6 +560,7 @@ def plan_to_markdown(plan: Plan) -> str:
                 f"- Players: {d.min_players}–{d.max_players} · Intensity: {d.intensity} · Equipment: {d.equipment}",
                 f"- How: {d.description}",
                 f"- Coaching points: {d.coaching_points}",
+                f"- Source: {d.source}",
             ]
             if pd.setup_note:
                 lines.append(f"- Organisation: {pd.setup_note}")
