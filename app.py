@@ -88,7 +88,7 @@ with tab_plan:
     )
     present = {k: v for k, v in plan.levels.items() if v > 0}
     show_easier = plan.level_plan.mode == "split" or "beginner" in present
-    show_harder = plan.level_plan.mode == "split" or "advanced" in present
+    show_harder = (plan.level_plan.mode == "split" or "advanced" in present) and not plan.level_cap_note
 
     head, dl = st.columns([4, 1])
     head.markdown(
@@ -105,6 +105,8 @@ with tab_plan:
 
     if plan.level_plan.note:
         st.info(plan.level_plan.note, icon="👥")
+    if plan.level_cap_note:
+        st.info(plan.level_cap_note, icon="🧒")
     for w in plan.warnings:
         st.warning(w, icon="⚠️")
 
@@ -132,6 +134,8 @@ with tab_plan:
             with st.expander(f"**{d.name}** — {pd_.minutes} min", expanded=True):
                 st.caption(f"{d.id} · {d.min_players}–{d.max_players} players per group · intensity {d.intensity} · "
                            f"equipment: {d.equipment} · {d.space.replace('_', ' ')}{' · needs a basket' if d.needs_basket else ''}")
+                if pd_.age_note:
+                    st.markdown(f":blue[**Age**] {pd_.age_note}")
                 if pd_.setup_note:
                     st.markdown(f":orange[**Organisation**] {pd_.setup_note}")
                 st.write(d.description)
@@ -220,6 +224,12 @@ with tab_about:
         halves swap halfway. With a single coach the sideline drill must need low supervision.
 
         When the group mixes levels, each drill shows an easier and a harder variation so you can run stations.
+
+        **Age coherence.** Drills are chosen among those tagged for every selected age; when a block has
+        too few, drills tagged for some of the ages are allowed and flagged ("Written for U11/U13/U14,
+        not U9"). Sampling prefers drills written specifically for the selected ages over all-ages
+        fundamentals. Level is relative to age: for a U9-only group the standard version of a drill
+        is the advanced version, so the *Harder* variation (written for U11+) is hidden.
 
         Drill data lives in `data/drills.csv` — edit it freely, the app reloads it automatically.
         """

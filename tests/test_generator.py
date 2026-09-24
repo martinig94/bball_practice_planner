@@ -213,3 +213,46 @@ def test_offense_focus_has_half_court_and_transition(drills):
     off = [d for d in drills if d.category == "offense"]
     assert len(off) >= 12
     assert any(d.space == "full_court" for d in off) and any(d.space == "half_court" for d in off)
+
+
+def test_u9_advanced_is_capped(drills):
+    plan = generate_practice(drills, 12, ["U9"], 90, {"beginner": 4, "intermediate": 4, "advanced": 4}, seed=1)
+    assert plan.level_cap_note
+    assert "Harder (advanced)" not in plan_to_markdown(plan)
+    plan11 = generate_practice(drills, 12, ["U11"], 90, {"beginner": 4, "intermediate": 4, "advanced": 4}, seed=1)
+    assert not plan11.level_cap_note
+
+
+def test_single_age_groups_never_get_off_age_drills(drills):
+    for age in AGE_LEVELS:
+        for seed in range(8):
+            plan = generate_practice(drills, 12, [age], 90, focus=list(FOCUS_LABELS), seed=seed)
+            for b in plan.blocks:
+                for pd in b.drills:
+                    assert age in pd.drill.ages, (age, pd.drill.id)
+                    assert pd.age_note == ""
+
+
+def test_off_age_drills_are_flagged_in_mixed_groups(drills):
+    flagged = 0
+    for seed in range(20):
+        plan = generate_practice(drills, 12, ["U9", "U11"], 90, focus=["offense", "team_concepts"], seed=seed)
+        for b in plan.blocks:
+            for pd in b.drills:
+                if not {"U9", "U11"} <= pd.drill.ages:
+                    assert pd.age_note.startswith("Written for"), pd.drill.id
+                    flagged += 1
+    assert flagged > 0  # the fallback is exercised, and every use is flagged
+
+
+def test_age_specific_drills_are_preferred(drills):
+    from planner.generator import age_specificity
+    assert age_specificity(next(d for d in drills if len(d.ages) == 4)) == 0.25
+    assert age_specificity(next(d for d in drills if len(d.ages) == 1)) == 1.0
+    all_age_share = []
+    for seed in range(30):
+        plan = generate_practice(drills, 12, ["U14"], 90, focus=list(FOCUS_LABELS), seed=seed)
+        picks = [pd.drill for b in plan.blocks for pd in b.drills]
+        all_age_share.append(sum(len(d.ages) == 4 for d in picks) / len(picks))
+    pool_share = sum(len(d.ages) == 4 for d in drills if "U14" in d.ages) / sum("U14" in d.ages for d in drills)
+    assert sum(all_age_share) / len(all_age_share) < pool_share  # picked less often than their share of the pool

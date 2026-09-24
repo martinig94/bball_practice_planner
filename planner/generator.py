@@ -137,6 +137,16 @@ class PlannedDrill:
     groups: int = 1
     n_players: int = 0
     sideline: "Drill | None" = None  # split-and-swap: the other half works on the sideline strip
+    ages_selected: frozenset[str] = frozenset()  # ages of the group, to flag drills not written for all of them
+
+    @property
+    def age_note(self) -> str:
+        """Warn when the drill is not tagged for every selected age (loose fallback was used)."""
+        missing = [a for a in AGE_LEVELS if a in self.ages_selected and a not in self.drill.ages]
+        if not missing:
+            return ""
+        tagged = "/".join(a for a in AGE_LEVELS if a in self.drill.ages)
+        return f"Written for {tagged}, not {'/'.join(missing)}: simplify for the younger players."
 
     @property
     def group_size(self) -> int:
@@ -202,6 +212,7 @@ class Plan:
     level_plan: LevelPlan
     blocks: list[Block]
     warnings: list[str] = field(default_factory=list)
+    level_cap_note: str = ""  # e.g. U9: 'advanced' capped at the standard version
 
     @property
     def planned_minutes(self) -> int:
@@ -292,9 +303,18 @@ def scale_minutes(durations: Sequence[int], target: int) -> list[int]:
     return mins
 
 
+def age_specificity(d: Drill) -> float:
+    """1.0 for a drill written for a single age group, down to 0.25 for an all-ages drill.
+
+    Used as a sampling weight so that, for a U9 group, a drill written for U9/U11 is
+    preferred over an all-ages fundamental, and for U14 a teen drill over a generic one.
+    """
+    return 1.0 / max(1, len(d.ages & set(AGE_LEVELS)))
+
+
 def pick_block(pool: Sequence[Drill], minutes: int, used: set[str], rng: random.Random,
                max_drills: int = 3, min_drill: int = 4, n_players: int = 0,
-               baskets: int = 2, max_groups: int = 4) -> list[PlannedDrill]:
+               baskets: int = 2, max_groups: int = 4, ages: Sequence[str] = ()) -> list[PlannedDrill]:
     """Draw drills from `pool` until `minutes` are covered, then rescale to fit exactly.
 
     Drills that keep the whole roster in one group are preferred over ones that
@@ -304,7 +324,8 @@ def pick_block(pool: Sequence[Drill], minutes: int, used: set[str], rng: random.
     if not candidates or minutes <= 0:
         return []
     # Efraimidis-Spirakis weighted sampling without replacement
-    candidates.sort(key=lambda d: rng.random() ** d.groups_for(n_players), reverse=True)  # noqa: E501
+    # weight = age specificity / groups needed  ->  key = u ** (1 / weight)
+    candidates.sort(key=lambda d: rng.random() ** (d.groups_for(n_players) / age_specificity(d)), reverse=True)
     chosen: list[Drill] = []
     total = 0
     for d in candidates:
@@ -314,7 +335,7 @@ def pick_block(pool: Sequence[Drill], minutes: int, used: set[str], rng: random.
             break
         chosen.append(d)
         total += d.duration_min
-    return [PlannedDrill(d, m, d.groups_plan(n_players, baskets, max_groups), n_players)
+    return [PlannedDrill(d, m, d.groups_plan(n_players, baskets, max_groups), n_players, ages_selected=frozenset(ages))
             for d, m in zip(chosen, scale_minutes([d.duration_min for d in chosen], minutes))]
 
 
@@ -387,6 +408,17 @@ def generate_practice(
         levels["intermediate"] = n_players
     levels_present = [lv for lv, n in levels.items() if n > 0]
 
+    # Age ceiling on level: 'advanced' is relative to the age group. For a U9-only group the
+    # standard version of a drill IS the advanced version; the 'Harder' variation (written
+    # with older players in mind) is reserved for U11+.
+    level_cap_note = ""
+    if set(ages) == {"U9"} and levels.get("advanced", 0) > 0:
+        levels_present = [lv for lv in levels_present if lv != "advanced"] or ["intermediate"]
+        if "intermediate" not in levels_present:
+            levels_present.append("intermediate")
+        level_cap_note = (f"U9 group: the {levels['advanced']} 'advanced' players work the standard version of each "
+                          "drill (the 'Harder' variation is written for U11+ and is hidden).")
+
     budget = time_budget(duration, ages, include_athletic)
     pool = Pool(drills, ages, levels_present, n_players, baskets, max_groups)
     used: set[str] = set()
@@ -427,12 +459,12 @@ def generate_practice(
             used.add(side.id)
 
     # 1. Physical preparation: one warm-up drill + coordination / athletic work.
-    warm = pick_block(pool.select(lambda d: d.category == "warmup"), min(6, budget["prep"] - 4), used, rng, max_drills=1, n_players=n_players, baskets=baskets, max_groups=max_groups)
+    warm = pick_block(pool.select(lambda d: d.category == "warmup"), min(6, budget["prep"] - 4), used, rng, max_drills=1, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
     used.update(pd.drill.id for pd in warm)
     coord_pool = pool.select(lambda d: d.category == "coordination" and d.intensity != "high", used)
     if len(coord_pool) < 2:
         coord_pool = pool.select(lambda d: d.category == "coordination", used)
-    coord = pick_block(coord_pool, budget["prep"] - sum(pd.minutes for pd in warm), used, rng, max_drills=2, n_players=n_players, baskets=baskets, max_groups=max_groups)
+    coord = pick_block(coord_pool, budget["prep"] - sum(pd.minutes for pd in warm), used, rng, max_drills=2, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
     prep = warm + coord
     for pd, m in zip(prep, scale_minutes([pd.drill.duration_min for pd in prep], budget["prep"])):
         pd.minutes = m
@@ -443,7 +475,7 @@ def generate_practice(
     # 2. Athletic development (optional), right after the warm-up while legs are fresh.
     if budget["athletic"] > 0:
         ath = pick_block(pool.select(lambda d: d.category == "coordination", used), budget["athletic"], used, rng,
-                         max_drills=2, n_players=n_players, baskets=baskets, max_groups=max_groups)
+                         max_drills=2, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
         add_block("Athletic development", budget["athletic"], ath,
                   "Speed, jumping and change of direction while the players are warm but not tired.")
 
@@ -453,11 +485,11 @@ def generate_practice(
     for f, minutes in zip(focus, per_focus):
         fpool = pool.select(lambda d: d.category in SKILL_CATEGORIES and f in d.focus, used)
         primary = pool.select(lambda d: d.category == f and f in d.focus, used)
-        chosen = pick_block(primary, minutes, used, rng, max_drills=3, n_players=n_players, baskets=baskets, max_groups=max_groups)
+        chosen = pick_block(primary, minutes, used, rng, max_drills=3, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
         got = sum(pd.minutes for pd in chosen)
         if got < minutes and len(chosen) < 3:
             extra = pick_block(fpool, minutes - got, used | {pd.drill.id for pd in chosen}, rng,
-                               max_drills=3 - len(chosen), n_players=n_players, baskets=baskets, max_groups=max_groups)
+                               max_drills=3 - len(chosen), n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
             chosen += extra
             for pd, m in zip(chosen, scale_minutes([pd.drill.duration_min for pd in chosen], minutes)):
                 pd.minutes = m
@@ -480,12 +512,12 @@ def generate_practice(
             plan_warnings_extra = [f"No {'/'.join(sorted(allowed))} scrimmage fits this roster; using another format."]
     scrim_minutes = game_minutes if game_minutes <= 14 else max(10, round(game_minutes * 0.6))
     scrim = pick_block(scrim_pool, scrim_minutes, used, rng, max_drills=1, n_players=n_players,
-                       baskets=baskets, max_groups=max_groups)
+                       baskets=baskets, max_groups=max_groups, ages=ages)
     rest = game_minutes - sum(pd.minutes for pd in scrim)
     fun_pool = pool.select(lambda d: (d.category == "game" or "game" in d.focus) and not d.game_format, used | {pd.drill.id for pd in scrim})
     themed = [d for d in fun_pool if d.focus & set(focus)]
     fun = pick_block(themed if len(themed) >= 2 else fun_pool, rest, used | {pd.drill.id for pd in scrim}, rng,
-                     max_drills=2 if shortfall else 1, n_players=n_players, baskets=baskets, max_groups=max_groups) if rest >= 5 else []
+                     max_drills=2 if shortfall else 1, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages) if rest >= 5 else []
     game = fun + scrim  # scrimmage last
     if rest < 5 and scrim:
         scrim[0].minutes = game_minutes
@@ -499,15 +531,15 @@ def generate_practice(
     remaining = duration - budget["cooldown"] - sum(b.minutes for b in blocks)
     if remaining > 0:
         extra = pick_block(pool.select(lambda d: d.category == "coordination", used), remaining, used, rng,
-                           max_drills=2, n_players=n_players, baskets=baskets, max_groups=max_groups)
+                           max_drills=2, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
         add_block("Extra coordination", remaining, extra)
 
     # 5. Cool-down.
-    cool = pick_block(pool.select(lambda d: d.category == "cooldown", used), budget["cooldown"], used, rng, max_drills=1, n_players=n_players, baskets=baskets, max_groups=max_groups)
+    cool = pick_block(pool.select(lambda d: d.category == "cooldown", used), budget["cooldown"], used, rng, max_drills=1, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages)
     add_block("Cool-down & reflection", budget["cooldown"], cool)
 
     plan = Plan(n_players, ages, duration, levels, focus, seed, baskets, sideline_strip, coaches,
-                include_athletic, budget, level_plan(levels), blocks)
+                include_athletic, budget, level_plan(levels), blocks, level_cap_note=level_cap_note)
     plan.warnings.extend(plan_warnings_extra)
     if not scrim:
         plan.warnings.append("No scrimmage drill fits this roster — the game block has no small-sided game.")
@@ -535,7 +567,7 @@ def generate_practice(
 def plan_to_markdown(plan: Plan) -> str:
     present = {k: v for k, v in plan.levels.items() if v > 0}
     show_easier = plan.level_plan.mode == "split" or "beginner" in present
-    show_harder = plan.level_plan.mode == "split" or "advanced" in present
+    show_harder = (plan.level_plan.mode == "split" or "advanced" in present) and not plan.level_cap_note
     lines = [
         f"# Practice plan — {plan.duration} min",
         "",
@@ -546,6 +578,8 @@ def plan_to_markdown(plan: Plan) -> str:
     ]
     if plan.level_plan.note:
         lines.append(f"- Groups: {plan.level_plan.note}")
+    if plan.level_cap_note:
+        lines.append(f"- Level: {plan.level_cap_note}")
     lines.append("")
     t = 0
     for b in plan.blocks:
@@ -562,6 +596,8 @@ def plan_to_markdown(plan: Plan) -> str:
                 f"- Coaching points: {d.coaching_points}",
                 f"- Source: {d.source}",
             ]
+            if pd.age_note:
+                lines.append(f"- Age: {pd.age_note}")
             if pd.setup_note:
                 lines.append(f"- Organisation: {pd.setup_note}")
             if pd.sideline:

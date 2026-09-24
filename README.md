@@ -36,6 +36,16 @@ The plan updates as you change the form. **Reshuffle drills** draws a new random
 selection with the same inputs; the seed is shown so a plan can be reproduced.
 **Download plan (.md)** exports the practice as Markdown to print or share.
 
+### Age coherence
+
+Drills are drawn from those tagged for **every** selected age; only when a block would
+otherwise run dry are drills tagged for some of the ages allowed, and each such drill is
+flagged in the plan ("Written for U11/U13/U14, not U9: simplify for the younger players").
+Sampling prefers drills written specifically for the selected ages over all-ages
+fundamentals. Level is relative to age: for a U9-only group the standard version of each
+drill *is* the advanced version, so the `harder` variation (written with U11+ in mind) is
+hidden and the plan says so.
+
 ### Time budget (minutes)
 
 | Block | 60' | 90' | 120' |
