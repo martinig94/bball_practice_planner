@@ -250,10 +250,95 @@ def test_age_specific_drills_are_preferred(drills):
     from planner.generator import age_specificity
     assert age_specificity(next(d for d in drills if len(d.ages) == 4)) == 0.25
     assert age_specificity(next(d for d in drills if len(d.ages) == 1)) == 1.0
-    all_age_share = []
-    for seed in range(30):
-        plan = generate_practice(drills, 12, ["U14"], 90, focus=list(FOCUS_LABELS), seed=seed)
-        picks = [pd.drill for b in plan.blocks for pd in b.drills]
-        all_age_share.append(sum(len(d.ages) == 4 for d in picks) / len(picks))
-    pool_share = sum(len(d.ages) == 4 for d in drills if "U14" in d.ages) / sum("U14" in d.ages for d in drills)
-    assert sum(all_age_share) / len(all_age_share) < pool_share  # picked less often than their share of the pool
+    import planner.generator as gen
+
+    def all_age_share(seeds=40):
+        vals = []
+        for seed in range(seeds):
+            plan = generate_practice(drills, 12, ["U14"], 90, focus=list(FOCUS_LABELS), seed=seed,
+                                     concepts_used=["screens", "zone", "press"], style=[])
+            picks = [pd.drill for b in plan.blocks for pd in b.drills]
+            vals.append(sum(len(d.ages) == 4 for d in picks) / len(picks))
+        return sum(vals) / len(vals)
+
+    weighted = all_age_share()
+    original = gen.age_specificity
+    gen.age_specificity = lambda d: 1.0  # switch the preference off for a fair baseline
+    try:
+        uniform = all_age_share()
+    finally:
+        gen.age_specificity = original
+    assert weighted < uniform  # all-ages drills picked less often once the preference is on
+
+
+def test_u9_gets_only_games(drills):
+    for seed in range(15):
+        for ages in (["U9"], ["U9", "U11"]):
+            plan = generate_practice(drills, 12, ages, 90, focus=list(FOCUS_LABELS), seed=seed)
+            for b in plan.blocks:
+                for pd in b.drills:
+                    assert pd.drill.game_like or pd.drill.category == "cooldown", (ages, pd.drill.id)
+                    if pd.sideline:
+                        assert pd.sideline.game_like, pd.sideline.id
+            assert plan.planned_minutes == 90
+            assert "every drill is a game" in plan.level_cap_note
+    plan = generate_practice(drills, 12, ["U11"], 90, seed=1)
+    assert "every drill is a game" not in plan.level_cap_note
+
+
+def test_u9_has_games_for_every_block_type(drills):
+    u9 = [d for d in drills if "U9" in d.ages and d.game_like]
+    for cat in ("warmup", "coordination", "ballhandling", "passing_shooting", "defense"):
+        assert sum(d.category == cat for d in u9) >= 5, cat
+    assert not any(d.id == "CO09" and "U9" in d.ages for d in drills)  # core circuit is not for 6-8 year olds
+
+
+def test_concept_prerequisites_are_respected(drills):
+    from planner.generator import PREREQ_CONCEPTS
+    for seed in range(10):
+        plan = generate_practice(drills, 12, ["U14"], 90, focus=list(FOCUS_LABELS), seed=seed)  # default: no concepts
+        for b in plan.blocks:
+            for pd in b.drills:
+                assert not (pd.drill.concepts & set(PREREQ_CONCEPTS)), pd.drill.id
+    with_screens = [generate_practice(drills, 12, ["U14"], 90, focus=["offense", "team_concepts"], seed=s,
+                                      concepts_used=["screens"]) for s in range(30)]
+    assert any("screens" in pd.drill.concepts for p in with_screens for b in p.blocks for pd in b.drills)
+
+
+def test_dribble_drive_style_is_preferred(drills):
+    def share(style):
+        hits = tot = 0
+        for s in range(40):
+            plan = generate_practice(drills, 12, ["U14"], 90, focus=["offense"], seed=s, style=style)
+            for b in plan.blocks:
+                for pd in b.drills:
+                    tot += 1; hits += "dribble_drive" in pd.drill.concepts
+        return hits / tot
+    assert share(["dribble_drive"]) > share([])
+
+
+def test_emphasis_strongly_favours_theme(drills):
+    def share(emphasis):
+        hits = tot = 0
+        for s in range(30):
+            plan = generate_practice(drills, 12, ["U13"], 90, focus=["defense"], seed=s, emphasis=emphasis)
+            for b in plan.blocks:
+                if b.title.startswith("Skill block"):
+                    for pd in b.drills:
+                        tot += 1; hits += "rebounding" in pd.drill.themes
+        return hits / tot
+    assert share(["rebounding"]) > 1.5 * share([])
+
+
+def test_u9_never_gets_closeouts(drills):
+    assert not [d.id for d in drills if "U9" in d.ages and "closeouts" in d.themes]
+    for seed in range(10):
+        plan = generate_practice(drills, 12, ["U9"], 90, focus=list(FOCUS_LABELS), seed=seed, emphasis=["closeouts"])
+        assert not any("closeouts" in pd.drill.themes for b in plan.blocks for pd in b.drills)
+
+
+def test_tool_based_warmups_exist_for_u9(drills):
+    tools = [d for d in drills if "U9" in d.ages and d.category in ("warmup", "coordination", "game")
+             and any(w in d.equipment.lower() for w in ("tennis", "balloon", "stick"))]
+    assert len(tools) >= 10
+    assert all(d.game_like for d in tools)

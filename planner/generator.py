@@ -36,7 +36,14 @@ REQUIRED_COLUMNS = (
     "id", "name", "category", "focus", "ages", "levels", "min_players", "max_players",
     "duration_min", "intensity", "equipment", "description", "coaching_points", "easier", "harder",
 )
-OPTIONAL_COLUMNS = ("needs_basket", "space", "sideline_ok", "supervision", "game_format", "source", "variants")  # have defaults when absent
+OPTIONAL_COLUMNS = ("needs_basket", "space", "sideline_ok", "supervision", "game_format", "source", "variants", "game_like", "concepts", "themes")  # have defaults when absent
+THEMES = {"rebounding": "Rebounding / box-out", "closeouts": "Closeouts", "finishing": "Finishing at the rim", "1v1": "1v1",
+          "contact": "Contact / physicality", "passing": "Passing", "shooting": "Shooting", "transition": "Transition",
+          "footwork": "Footwork", "spacing": "Spacing & cutting", "reaction": "Reaction", "conditioning": "Conditioning"}
+EMPHASIS_WEIGHT = 6.0
+PREREQ_CONCEPTS = {"screens": "Screens (on and off the ball)", "zone": "Zone defence / attacking a zone", "press": "Full-court press and traps"}
+STYLE_CONCEPTS = {"dribble_drive": "Dribble-drive (drive, kick, cut — no screens)"}
+GAMES_ONLY_AGES = frozenset({"U9"})  # 6-8 year olds: everything except the cool-down must be a game
 ALL_COLUMNS = REQUIRED_COLUMNS + OPTIONAL_COLUMNS
 FOCUS_TAGS = ("physical", "coordination", "ballhandling", "passing_shooting", "offense", "defense", "team_concepts", "game")
 INTENSITIES = ("low", "medium", "high")
@@ -73,6 +80,9 @@ class Drill:
     game_format: frozenset[str] = frozenset()  # e.g. {"3v3", "4v4"} for scrimmage-type games
     source: str = "original"  # where the drill comes from (attribution shown in the UI/export)
     variants: tuple[str, ...] = ()  # extra variations beyond easier/harder, free text
+    game_like: bool = False  # framed as a game (tag, race, points, story) — required for U9
+    concepts: frozenset[str] = frozenset()  # screens | zone | press (prerequisites) | dribble_drive (style)
+    themes: frozenset[str] = frozenset()  # what the drill emphasises: rebounding, closeouts, finishing, 1v1, contact...
 
     def max_groups(self, baskets: int, max_stations: int = 4) -> int:
         """How many parallel groups this drill can run on one court.
@@ -133,6 +143,9 @@ class Drill:
             game_format=split(row.get("game_format") or ""),
             source=(row.get("source") or "original").strip(),
             variants=tuple(v.strip() for v in (row.get("variants") or "").split(" | ") if v.strip()),
+            game_like=(row.get("game_like") or "no").strip().lower() in ("yes", "y", "true", "1"),
+            concepts=split(row.get("concepts") or ""),
+            themes=split(row.get("themes") or ""),
         )
 
     def to_row(self) -> dict[str, str]:
@@ -150,6 +163,9 @@ class Drill:
             "sideline_ok": "yes" if self.sideline_ok else "no", "supervision": self.supervision,
             "game_format": ";".join(sorted(self.game_format)), "source": self.source,
             "variants": " | ".join(self.variants),
+            "game_like": "yes" if self.game_like else "no",
+            "concepts": ";".join(sorted(self.concepts)),
+            "themes": ";".join(sorted(self.themes)),
         }
 
 
@@ -439,6 +455,9 @@ def generate_practice(
     include_athletic: bool = True,
     exclude_ids: Iterable[str] = (),
     weights: dict[str, float] | None = None,
+    concepts_used: Iterable[str] = (),
+    style: Iterable[str] = ("dribble_drive",),
+    emphasis: Iterable[str] = (),
 ) -> Plan:
     """Build a practice plan.
 
@@ -449,7 +468,10 @@ def generate_practice(
     blocks with half the team doing a self-managed drill there. coaches: with a
     single coach the sideline drill must need low supervision. exclude_ids: drills to
     leave out (recently used, or rated 0 stars). weights: per-drill sampling multipliers
-    from ratings (1.0 = neutral).
+    from ratings (1.0 = neutral). concepts_used: prerequisites the team has (screens,
+    zone, press) — drills requiring others are excluded. style: concept tags to
+    favour (weight ×1.5), e.g. dribble_drive. emphasis: theme tags (rebounding,
+    closeouts...) whose drills get a strong preference (×4) in every block.
     """
     rng = random.Random(seed)
     plan_warnings_extra: list[str] = []
@@ -464,15 +486,30 @@ def generate_practice(
     # standard version of a drill IS the advanced version; the 'Harder' variation (written
     # with older players in mind) is reserved for U11+.
     level_cap_note = ""
+    if set(ages) & GAMES_ONLY_AGES:
+        level_cap_note = "U9 (6–8 year olds): every drill is a game; technical drills and the core circuit are left out. "
     if set(ages) == {"U9"} and levels.get("advanced", 0) > 0:
         levels_present = [lv for lv in levels_present if lv != "advanced"] or ["intermediate"]
         if "intermediate" not in levels_present:
             levels_present.append("intermediate")
-        level_cap_note = (f"U9 group: the {levels['advanced']} 'advanced' players work the standard version of each "
-                          "drill (the 'Harder' variation is written for U11+ and is hidden).")
+        level_cap_note += (f"The {levels['advanced']} 'advanced' players work the standard version of each "
+                           "drill (the 'Harder' variation is written for U11+ and is hidden).")
 
     budget = time_budget(duration, ages, include_athletic)
     exclude = set(exclude_ids)
+    known = set(concepts_used)
+    drills = [d for d in drills if not (d.concepts & set(PREREQ_CONCEPTS)) - known]
+    style_tags = set(style)
+    weights = dict(weights or {})
+    emph = set(emphasis)
+    for d in drills:
+        if d.concepts & style_tags:
+            weights[d.id] = weights.get(d.id, 1.0) * 1.5
+        if d.themes & emph:
+            weights[d.id] = weights.get(d.id, 1.0) * EMPHASIS_WEIGHT
+    games_only = bool(set(ages) & GAMES_ONLY_AGES)
+    if games_only:  # U9: only game-like drills, cool-down excepted
+        drills = [d for d in drills if d.game_like or d.category == "cooldown"]
     pool = Pool([d for d in drills if d.id not in exclude], ages, levels_present, n_players, baskets, max_groups)
     if not pool.loose:  # everything excluded (tiny database or huge exclusion) — fall back to all drills
         pool = Pool(drills, ages, levels_present, n_players, baskets, max_groups)
@@ -539,7 +576,8 @@ def generate_practice(
     unfilled: list[str] = []
     for f, minutes in zip(focus, per_focus):
         fpool = pool.select(lambda d: d.category in SKILL_CATEGORIES and f in d.focus, used)
-        primary = pool.select(lambda d: d.category == f and f in d.focus, used)
+        primary = pool.select(lambda d: (d.category == f or (games_only and d.category == "game" and not d.game_format))
+                              and f in d.focus, used)
         chosen = pick_block(primary, minutes, used, rng, max_drills=3, n_players=n_players, baskets=baskets, max_groups=max_groups, ages=ages, weights=weights)
         got = sum(pd.minutes for pd in chosen)
         if got < minutes and len(chosen) < 3:
@@ -622,7 +660,7 @@ def generate_practice(
 def plan_to_markdown(plan: Plan) -> str:
     present = {k: v for k, v in plan.levels.items() if v > 0}
     show_easier = plan.level_plan.mode == "split" or "beginner" in present
-    show_harder = (plan.level_plan.mode == "split" or "advanced" in present) and not plan.level_cap_note
+    show_harder = (plan.level_plan.mode == "split" or "advanced" in present) and "hidden" not in plan.level_cap_note
     lines = [
         f"# Practice plan — {plan.duration} min",
         "",

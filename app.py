@@ -14,7 +14,8 @@ import streamlit as st
 
 from planner import (AGE_LEVELS, FOCUS_LABELS, SKILL_LEVELS, Drill, generate_practice, load_drills,
                      next_drill_id, plan_to_markdown, save_drills)
-from planner.generator import CATEGORIES, FOCUS_TAGS, GAME_FORMATS, INTENSITIES, SPACES, SUPERVISION
+from planner.generator import (CATEGORIES, FOCUS_TAGS, GAME_FORMATS, INTENSITIES, PREREQ_CONCEPTS, SPACES,
+                               STYLE_CONCEPTS, SUPERVISION, THEMES)
 from planner.log import LogEntry, drill_stats, load_log, log_plan, rating_weights, recent_drill_ids, save_log
 
 ROOT = Path(__file__).resolve().parent
@@ -77,8 +78,18 @@ with st.sidebar:
         format_func=FOCUS_LABELS.get,
     )
 
+    emphasis = st.multiselect("Emphasis (optional)", list(THEMES), default=[], format_func=THEMES.get,
+                              help="Drills tagged with these themes are strongly preferred in every block.")
+
     if st.button("🔀 Reshuffle drills", use_container_width=True):
         st.session_state.seed = random.randint(1, 999_999)
+
+    st.header("Team style")
+    concepts_used = st.multiselect("Concepts your team already uses", list(PREREQ_CONCEPTS),
+                                   default=[], format_func=PREREQ_CONCEPTS.get,
+                                   help="Drills that need a concept you have not introduced yet are left out.")
+    style = st.multiselect("Prefer drills built on", list(STYLE_CONCEPTS), default=["dribble_drive"],
+                           format_func=STYLE_CONCEPTS.get)
 
     st.header("Memory")
     avoid_n = st.number_input("Avoid drills used in the last … practices", min_value=0, max_value=10, value=2, step=1,
@@ -100,11 +111,11 @@ with tab_plan:
         drills, n_players=int(n_players), ages=ages, duration=int(duration),
         levels=levels, focus=focus, seed=st.session_state.seed, baskets=baskets,
         sideline_strip=sideline_strip, coaches=int(coaches), include_athletic=include_athletic,
-        exclude_ids=exclude, weights=weights,
+        exclude_ids=exclude, weights=weights, concepts_used=concepts_used, style=style, emphasis=emphasis,
     )
     present = {k: v for k, v in plan.levels.items() if v > 0}
     show_easier = plan.level_plan.mode == "split" or "beginner" in present
-    show_harder = (plan.level_plan.mode == "split" or "advanced" in present) and not plan.level_cap_note
+    show_harder = (plan.level_plan.mode == "split" or "advanced" in present) and "hidden" not in plan.level_cap_note
 
     head, save, dl = st.columns([3, 1, 1])
     if save.button("💾 Save to practice log", use_container_width=True,
@@ -115,7 +126,8 @@ with tab_plan:
     head.markdown(
         f"## {plan.duration}-minute practice &nbsp; "
         f"<span style='font-size:0.6em;color:gray'>{plan.n_players} players · {' · '.join(plan.ages)} · "
-        f"{' · '.join(FOCUS_LABELS[f] for f in plan.focus)} · seed {plan.seed}</span>",
+        f"{' · '.join(FOCUS_LABELS[f] for f in plan.focus)}"
+        f"{' · emphasis: ' + ', '.join(THEMES[e] for e in emphasis) if emphasis else ''} · seed {plan.seed}</span>",
         unsafe_allow_html=True,
     )
     dl.download_button(
@@ -154,7 +166,8 @@ with tab_plan:
             d = pd_.drill
             with st.expander(f"**{d.name}** — {pd_.minutes} min", expanded=True):
                 st.caption(f"{d.id} · {d.min_players}–{d.max_players} players per group · intensity {d.intensity} · "
-                           f"equipment: {d.equipment} · {d.space.replace('_', ' ')}{' · needs a basket' if d.needs_basket else ''}")
+                           f"equipment: {d.equipment} · {d.space.replace('_', ' ')}{' · needs a basket' if d.needs_basket else ''}"
+                           f"{' · themes: ' + ', '.join(sorted(d.themes)) if d.themes else ''}")
                 if pd_.age_note:
                     st.markdown(f":blue[**Age**] {pd_.age_note}")
                 if pd_.setup_note:
@@ -228,6 +241,7 @@ with tab_library:
                "To add your own, append rows to `data/drills.csv` (see README).")
     f1, f2, f3, f4 = st.columns(4)
     cat = f1.multiselect("Category", sorted({d.category for d in drills}))
+    theme_f = st.multiselect("Theme", list(THEMES), format_func=THEMES.get)
     age_f = f2.multiselect("Age", AGE_LEVELS)
     lvl_f = f3.multiselect("Level", SKILL_LEVELS)
     text = f4.text_input("Search text")
@@ -237,6 +251,7 @@ with tab_library:
         if (not cat or d.category in cat)
         and (not age_f or set(age_f) <= d.ages)
         and (not lvl_f or set(lvl_f) <= d.levels)
+        and (not theme_f or set(theme_f) & d.themes)
         and (not text or text.lower() in f"{d.name} {d.description} {d.coaching_points} {d.equipment}".lower())
     ]
     table = pd.DataFrame([{
@@ -244,7 +259,9 @@ with tab_library:
         "ages": " ".join(a for a in AGE_LEVELS if a in d.ages),
         "levels": ", ".join(l for l in SKILL_LEVELS if l in d.levels),
         "players": f"{d.min_players}–{d.max_players}", "space": d.space.replace("_", " "),
-        "basket": "yes" if d.needs_basket else "", "sideline": "yes" if d.sideline_ok else "",
+        "basket": "yes" if d.needs_basket else "", "game": "yes" if d.game_like else "", "themes": ", ".join(sorted(d.themes)),
+        "concepts": ", ".join(sorted(d.concepts)),
+        "sideline": "yes" if d.sideline_ok else "",
         "supervision": d.supervision, "source": d.source.split(" (")[0].split(" —")[0],
         "uses": stats[d.id].uses if d.id in stats else 0,
         "avg ★": (round(stats[d.id].avg_rating, 1) if d.id in stats and stats[d.id].avg_rating is not None else None),
@@ -285,6 +302,13 @@ with tab_edit:
         max_p = c2.number_input("Max players per group", 1, 30, base.max_players if base else 16)
         dur = c3.number_input("Typical minutes", 2, 30, base.duration_min if base else 8)
         intensity = c4.selectbox("Intensity", INTENSITIES, index=INTENSITIES.index(base.intensity) if base else 1)
+        game_like = st.checkbox("Framed as a game (tag, race, points…) — required for U9", value=base.game_like if base else False)
+        themes_sel = st.multiselect("Themes (what it emphasises)", list(THEMES), default=sorted(t for t in (base.themes if base else []) if t in THEMES),
+                                    format_func=THEMES.get)
+        concepts_sel = st.multiselect("Concepts", list(PREREQ_CONCEPTS) + list(STYLE_CONCEPTS),
+                                      default=sorted(base.concepts) if base else [],
+                                      format_func=lambda c: {**PREREQ_CONCEPTS, **STYLE_CONCEPTS}[c],
+                                      help="Prerequisites the drill needs (screens, zone, press) or the style it trains (dribble-drive).")
         c1, c2, c3, c4 = st.columns(4)
         needs_basket = c1.checkbox("Needs a basket", value=base.needs_basket if base else True)
         space = c2.selectbox("Space", SPACES, index=SPACES.index(base.space) if base else 1)
@@ -321,6 +345,7 @@ with tab_edit:
                 needs_basket=needs_basket, space=space, sideline_ok=sideline_ok, supervision=supervision,
                 game_format=frozenset(game_format), source=source.strip() or "original",
                 variants=tuple(v.strip() for v in variants.splitlines() if v.strip()),
+                game_like=game_like, concepts=frozenset(concepts_sel), themes=frozenset(themes_sel),
             )
             updated = [new_drill if d.id == new_drill.id else d for d in drills]
             if base is None:
@@ -374,6 +399,12 @@ with tab_about:
         not U9"). Sampling prefers drills written specifically for the selected ages over all-ages
         fundamentals. Level is relative to age: for a U9-only group the standard version of a drill
         is the advanced version, so the *Harder* variation (written for U11+) is hidden.
+        **U9 = 6–8 year olds:** whenever U9 is selected, every drill except the cool-down must be
+        framed as a game (`game_like` tag); technical drills are left out.
+
+        **Team style.** Drills are tagged with the concepts they need (screens, zone, press) or train
+        (dribble-drive). Only drills whose prerequisites you have ticked in the sidebar are used, and
+        drills in the styles you prefer are weighted ×1.5.
 
         Drill data lives in `data/drills.csv` — edit it freely, the app reloads it automatically.
         """

@@ -46,6 +46,28 @@ fundamentals. Level is relative to age: for a U9-only group the standard version
 drill *is* the advanced version, so the `harder` variation (written with U11+ in mind) is
 hidden and the plan says so.
 
+### U9 = 6–8 year olds: games only
+
+Whenever U9 is selected, every drill except the cool-down must be framed as a game
+(`game_like = yes`: tag games, races, relays, points, 1v1 challenges, mini 2v2/3v3);
+technical drills such as stationary series, form shooting, defensive slides or the core
+circuit are left out, and the plan says so.
+
+### Team style: concepts and dribble-drive
+
+Drills carry a `concepts` tag: prerequisites (`screens`, `zone`, `press`) or the style they
+train (`dribble_drive`). In the sidebar you tick the concepts your team already uses — by
+default none, so drills built on screens, zone or press are left out — and the styles you
+prefer (default: dribble-drive), which get a ×1.5 sampling weight.
+
+### Emphasis
+
+Drills carry `themes` (rebounding, closeouts, finishing, 1v1, contact, passing, shooting,
+transition, footwork, spacing, reaction, conditioning). Pick one or more under **Emphasis**
+in the sidebar and drills with those themes get a ×4 preference in every block, so a
+"rebounding day" actually is one. U9 never get closeout drills (none are tagged for them);
+they get contact games instead.
+
 ### Time budget (minutes)
 
 | Block | 60' | 90' | 120' |
@@ -100,7 +122,7 @@ usable drills — the planner then moves those minutes to the game block and tel
 
 ## The drill database — `data/drills.csv`
 
-235 drills in English. Most were written for this project; others are adapted — in our
+258 drills in English. Most were written for this project; others are adapted — in our
 own words, with attribution in the `source` column — from
 [hoopsaddict.com — Basketball Drills for 9-Year-Olds](https://www.hoopsaddict.com/basketball-drills-for-9-year-olds/),
 [hoopdrills.org](https://hoopdrills.org/drills) (which credits Breakthrough Basketball) and the
@@ -133,6 +155,9 @@ One row per drill; list fields are `;`-separated. Offense has its own category w
 | `game_format` | For scrimmage-type games: `2v2;3v3`, `4v4`, `5v5`… — used to pick the closing scrimmage by age |
 | `source` | Where the drill comes from: `original (written for this project)`, optionally followed by "see also …" when a public source describes the same drill, or the site it was adapted from |
 | `variants` | Extra variations, separated by ` \| ` (the app edits these one per line) |
+| `game_like` | `yes` / `no` — framed as a game; required for every non-cool-down drill when U9 is selected |
+| `concepts` | `screens`, `zone`, `press` (prerequisites) and/or `dribble_drive` (style), `;`-separated |
+| `themes` | What the drill emphasises (`rebounding;contact`…), `;`-separated — drives the Emphasis selector |
 
 ### Adding your own drills
 
